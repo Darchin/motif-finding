@@ -1,6 +1,9 @@
 import time
 import os
 from dist_calc import distance
+from collections import defaultdict
+from collections import Counter
+from math import log2
 
 CURR_PATH = os.path.dirname(__file__)
 os.chdir(CURR_PATH)
@@ -27,29 +30,69 @@ class StringUtils:
         
         print(result)
 
+    def IC(sequences: list[str]):
+        information_content = 0
+        string_length = len(sequences[0])
+        seq_count = len(sequences)
+        concat_string = ''.join(sequences)
+        counts = Counter(concat_string)
+        A_total = counts['A']
+        C_total = counts['C']
+        G_total = counts['G']
+        T_total = counts['T']
+
+        for p in range(string_length):
+            A_odds = sum([c=='A' for s in sequences for c in s[p]])/seq_count
+            C_odds = sum([c=='C' for s in sequences for c in s[p]])/seq_count
+            G_odds = sum([c=='G' for s in sequences for c in s[p]])/seq_count
+            T_odds = sum([c=='T' for s in sequences for c in s[p]])/seq_count
+            information_content += log2(A_odds/A_total) + log2(C_odds/C_total) + log2(G_odds/G_total) + log2(T_odds/T_total)
+
+        return information_content
+
+
         
 class SequenceProcessor:
-    def __init__(self, N, d):
-        self.maximum_mismatch = d
+    def __init__(self, N, w):
+        self.maximum_wiggle_room = w
         self.sequence_count = N
     class Lmer:
-        def __init__(self, lsequence, seq_idx, start_pos, d, N):
+        def __init__(self, lsequence, seq_idx, start_pos, w, N):
                 self.lsequence: str = lsequence
                 self.seq_idx = seq_idx
                 self.start_pos = start_pos
-                self.instance_map = {k: [] for k in range(N)}
-                self.closest_instance_dist = {k: 999 for k in range(N)}
-                del self.instance_map[self.seq_idx]
-                del self.closest_instance_dist[self.seq_idx]
-                self.dist_buckets = [[] for _ in range(d + 1)]
 
+                self.instances = {k: SequenceProcessor.Instance(w) for k in range(N)}
+                del self.instances[self.seq_idx]
+
+                self.instance_mask = [False for _ in range(N)]
+                self.instance_mask[self.seq_idx] = True
         def __str__(self) -> str:
             return f'{self.seq_idx}:[{self.lsequence}]'
         def __repr__(self) -> str:
             return self.__str__()
+    
+    class Instance:
+        def __init__(self, w) -> None:
+            self.w = w
+            self.least_distance = 999
+            self.instance_dict = defaultdict(list)
+        def appendIfNear(self, dist, lmer):
+            if dist <= self.least_distance + self.w: # Append Lmer to instances
+                self.instance_dict[dist].append(lmer)
+                if dist < self.least_distance: # If this new Lmer is also the new closest, remove some of the older ones that are too far.
+                    self.least_distance = dist
+                    keys = list(self.instance_dict.keys())
+                    for key in keys:
+                        if key - dist > self.w:
+                            del self.instance_dict[key]
+        def __str__(self) -> str:
+            return f'{self.instance_dict}'
+        def __repr__(self) -> str:
+            return self.__str__()
         
     def createLmer(self, lsequence, seq_idx, start_pos):
-        return self.Lmer(lsequence, seq_idx, start_pos, self.maximum_mismatch, self.sequence_count)
+        return self.Lmer(lsequence, seq_idx, start_pos, self.maximum_wiggle_room, self.sequence_count)
     
     def readFromSitesFile(relative_file_path, n_seq = -1, seq_len = -1) -> str:
         unfiltered_strings = open(relative_file_path).read().upper().split('\n')
@@ -79,59 +122,36 @@ class SequenceProcessor:
         return lmer_list
     
 class MotifFinder:
-    def fillDistanceBuckets(lmer_seq_list, N, d, w):
-        for i in range(N): # n
-            for j in lmer_seq_list[i]: # t
-                for k in range(i+1, N): # n
-                    for l in lmer_seq_list[k]: # t -> n^2 t^2
-                        dist = distance(j.lsequence, l.lsequence)
+    def findInstances(lmer_seq_list, N, d):
+        for first_seq in range(N):
+            for first_lmer in lmer_seq_list[first_seq]:
+                for second_seq in range(first_seq+1, N):
+                    for second_lmer in lmer_seq_list[second_seq]:
+                        dist = distance(first_lmer.lsequence, second_lmer.lsequence)
                         if dist <= d:
-                            j.dist_buckets[dist].append(l)
-                            l.dist_buckets[dist].append(j)
-                            if dist < j.closest_instance_dist[k]: j.closest_instance_dist[k] = dist
-                            if dist < l.closest_instance_dist[i]: l.closest_instance_dist[i] = dist
-    def findInstances(lmer_list, d, w):
-        for lmer in lmer_list: #nt
-            for i in range(d+1): # every distance up to d mismatch -> d
-                for lmers_i_dist_away in lmer.dist_buckets[i]: # lmers 'i' distance away from 'lmer'
-                    for lmer_at_i_dist in lmers_i_dist_away: # each lmer
-                        closest = lmer.closest_instance_dist[lmer_at_i_dist.seq_idx] # closest_instance_from_same_seq
-                        if i <= closest + w:
-                            lmer.instance_map[lmer_at_i_dist.seq_idx].append(lmer_at_i_dist)
+                            first_lmer.instance_mask[second_seq] = True
+                            first_lmer.instances[second_seq].appendIfNear(dist, second_lmer)
+
+                            second_lmer.instance_mask[first_seq] = True
+                            second_lmer.instances[first_seq].appendIfNear(dist, first_lmer)
 
     
-    def removeDegenerateLmers(lmer_list):
-        candidates = lmer_list
-        i = 0
-        while i < len(lmer_list):
-            # removed = False
-            if 999 in candidates[i].closest_instance_dist.values():
-                candidates.pop(i)
-            else:
-                i += 1
-            # for val in lmer_list[i].instance_map.values():
-            #     if len(val) == 0:
-            #         removed = True
-            #         lmer_list.pop(i)
-            # if not removed:
-                # i += 1
-
+    def removeDegenerateLmers(lmer_list, seq_count):
+        candidates = []
+        for lmer in lmer_list:
+            if sum(lmer.instance_mask) == seq_count:
+                candidates.append(lmer)
         return candidates
-                
-    def findMotif(candidate_lmers):
-        least_distance = 999
-        best_instances: dict
-        motif_prototype = 0
-        for lmer in candidate_lmers:
-            curr_total_dist = sum([t[0][0] for t in lmer.instance_map.values()])
-            if curr_total_dist < least_distance:
-                best_instances = lmer.instance_map
-                motif_prototype = lmer
-                least_distance = curr_total_dist
-
-        return best_instances, motif_prototype
     
-        
+    def findBestMotif(candidate_prototypes, seq_count):
+        best_motif_score = 0
+
+        for prototype in candidate_prototypes:
+            instance_list = [prototype.lsequence]
+            other_sequences = list(range(seq_count)).remove(prototype.seq_idx)
+            for i in other_sequences:
+                
+    
 
 def main():
     # sequences = SequenceProcessor.readFromSitesFile("datasets\\MA0002.1.sites", n_seq=26)
@@ -140,24 +160,21 @@ def main():
     d = 5
     w = 1
     N = len(sequences)
-
-    sq = SequenceProcessor(N, d)
+    sq = SequenceProcessor(N, w)
     
     start_time = time.perf_counter_ns()
     ########
     lmer_seq_lst = sq.extractLmersFromSequenceList(sequences, L)
     lmer_flatlist = [lmer for lmer_list in lmer_seq_lst for lmer in lmer_list]
 
-    MotifFinder.fillDistanceBuckets(lmer_seq_lst, N, d)
-
-
-    candidate_lmers = MotifFinder.removeDegenerateLmers(lmer_flatlist)
-
-    motif = MotifFinder.findMotif(candidate_lmers)
+    MotifFinder.findInstances(lmer_seq_lst, N, d)
+    candidate_lmers = MotifFinder.removeDegenerateLmers(lmer_flatlist, N)
+    # print(len(candidate_lmers))
+    # motif = MotifFinder.findMotif(candidate_lmers)
     ########
     end_time = time.perf_counter_ns()
 
-    StringUtils.displayMotifs(sequences, motif[0], motif[1])
+    # StringUtils.displayMotifs(sequences, motif[0], motif[1])
     print(f"Time to find motif: {(end_time-start_time)/(10**6)} ms")
 
 if __name__ == "__main__":
