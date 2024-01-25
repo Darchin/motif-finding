@@ -2,9 +2,9 @@ import time
 import os
 from dist_calc import distance
 from logbase2 import logbase2
+import numpy as np
 # from collections import defaultdict
 from collections import Counter
-from math import log2
 import functools
 from sortedcontainers import SortedList
 from operator import add
@@ -38,7 +38,7 @@ class SequenceProcessor:
         self.maximum_wiggle_room = w
         self.sequence_count = N
     class Lmer:
-        def __init__(self, lsequence, seq_idx, start_pos, w, N):
+        def __init__(self, lsequence, seq_idx, start_pos, N):
                 self.lsequence: str = lsequence
                 self.seq_idx = seq_idx
                 self.start_pos = start_pos
@@ -58,13 +58,19 @@ class SequenceProcessor:
         def __init__(self, dist, lmer):
             self.dist = dist
             self.lmer = lmer
+        def __contains__(self, dist):
+            return dist == self.dist
         def __eq__(self, other):
-            return isinstance(other, type(self)) and self.dist == other.dist
+            return (isinstance(other, type(self)) and self.dist == other.dist)# or (isinstance(other, int) and self.dist == other)
         def __lt__(self, other):
-            return isinstance(other, type(self)) and self.dist > other.dist
+            return isinstance(other, type(self)) and self.dist < other.dist
+        def __str__(self):
+            return self.dist
+        def __repr__(self):
+            return f'{self.__str__()}'
         
     def createLmer(self, lsequence, seq_idx, start_pos):
-        return self.Lmer(lsequence, seq_idx, start_pos, self.maximum_wiggle_room, self.sequence_count)
+        return self.Lmer(lsequence, seq_idx, start_pos, self.sequence_count)
     
     def readFromSitesFile(relative_file_path, n_seq = -1, seq_len = -1) -> str:
         unfiltered_strings = open(relative_file_path).read().upper().split('\n')
@@ -138,11 +144,7 @@ class MotifFinder:
         return information_content
     
     def chooseBestInstance(curr_instances, possible_instances):
-        # instance_strings = [s.lmer.lsequence for s in possible_instances]
-        # try:
         lmer_strings = [l.lsequence for l in curr_instances]
-        # except:
-            # print(curr_instances)
         string_length = len(lmer_strings[0])
         seq_count = len(lmer_strings)
         total = seq_count*string_length
@@ -179,7 +181,21 @@ class MotifFinder:
                 best_assignment = a.lmer
         # print(best_score)
         return best_assignment
-    
+    def pruneUnlikelyMotifs(lmers, N):
+        sorted_avg_dist_list = SortedList([(sum([sl[0].dist for sl in lmer.distances])/N, lmer) for lmer in lmers], key=lambda x: x[0])
+        mean_of_avgs = np.mean([x[0] for x in sorted_avg_dist_list])
+        idx = sorted_avg_dist_list.bisect_right((mean_of_avgs, None))
+        return [tup[1] for tup in sorted_avg_dist_list[:idx]]
+    def pruneDistanceList(lmers, w):
+        dummy_instance = SequenceProcessor.Instance(0, None)
+        for lmer in lmers:
+            for i in range(len(lmer.distances)):
+                closest = lmer.distances[i][0].dist
+                dummy_instance.dist = closest + w + 1
+                if dummy_instance in lmer.distances[i]:
+                    drop_idx = lmer.distances[i].index(dummy_instance)
+                else: continue
+                del lmer.distances[i][drop_idx:]
     def findBestMotif(candidate_lmers, seq_count):
         best_motif = None
         best_score = 0
@@ -193,7 +209,6 @@ class MotifFinder:
                 else:
                     instance_list.append(MotifFinder.chooseBestInstance(instance_list, cl.distances[seq_idx]))
             score = MotifFinder.IC(instance_list)
-            # print(score)
             if score > best_score:
                 best_score = score
                 best_motif = instance_list
@@ -202,7 +217,7 @@ class MotifFinder:
     
 
 def main():
-    sequences = SequenceProcessor.readFromSitesFile("datasets\\MA0014.2.sites", n_seq=120, seq_len=60)
+    sequences = SequenceProcessor.readFromSitesFile("datasets\\MA0014.2.sites", n_seq=60, seq_len=60)
     L = 10
     d = 5
     w = 1
@@ -215,7 +230,9 @@ def main():
     ########
     MotifFinder.findInstances(lmer_seq_lst, N, d)
     candidate_lmers = MotifFinder.removeDegenerateLmers(lmer_flatlist, N)
-    motif = MotifFinder.findBestMotif(candidate_lmers, N)
+    MotifFinder.pruneDistanceList(candidate_lmers, w)
+    likely_patterns = MotifFinder.pruneUnlikelyMotifs(candidate_lmers, N)
+    motif = MotifFinder.findBestMotif(likely_patterns, N)
     ########
     end_time = time.perf_counter_ns()
 
