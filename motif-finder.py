@@ -3,11 +3,9 @@ import os
 from dist_calc import distance
 from logbase2 import logbase2
 import numpy as np
-# from collections import defaultdict
 from collections import Counter
 import functools
 from sortedcontainers import SortedList
-from operator import add
 
 CURR_PATH = os.path.dirname(__file__)
 os.chdir(CURR_PATH)
@@ -18,14 +16,15 @@ class StringUtils:
         return substrings
 
     def displayMotifs(sequences, motif, L):
+        instances = motif[0]
+        pattern = motif[1]
         result = ""
-        p = motif[0] # motif prototype
-        result += f'{p.seq_idx}\t'
-        result += sequences[p.seq_idx][:p.start_pos]
-        result += '\033[92m' + sequences[p.seq_idx][p.start_pos:p.start_pos+L] + '\033[0m'
-        result += sequences[p.seq_idx][p.start_pos+L:] + '\n'
+        result += f'{pattern.seq_idx}\t'
+        result += sequences[pattern.seq_idx][:pattern.start_pos]
+        result += '\033[92m' + sequences[pattern.seq_idx][pattern.start_pos:pattern.start_pos+L] + '\033[0m'
+        result += sequences[pattern.seq_idx][pattern.start_pos+L:] + '\n'
     
-        for lmer in motif[1:]:
+        for lmer in instances:
             result += f'{lmer.seq_idx}\t'
             result += sequences[lmer.seq_idx][:lmer.start_pos]
             result += '\033[91m' + sequences[lmer.seq_idx][lmer.start_pos:lmer.start_pos+L] + '\033[0m'
@@ -40,14 +39,22 @@ class SequenceProcessor:
     class Lmer:
         def __init__(self, lsequence, seq_idx, start_pos, N):
                 self.lsequence: str = lsequence
-                self.seq_idx = seq_idx
-                self.start_pos = start_pos
+                self.seq_idx: int = seq_idx
+                self.start_pos: int = start_pos
 
-                self.distances = [SortedList() for _ in range(N)]
+                self.distances: list[SortedList] = [SortedList() for _ in range(N)]
                 self.distances[self.seq_idx].add(SequenceProcessor.Instance(0, self))
 
-                self.instance_mask = [False for _ in range(N)]
+                self.instance_mask: list[bool] = [False for _ in range(N)]
                 self.instance_mask[self.seq_idx] = True
+
+                c = Counter(self.lsequence)
+                self.counts: list[int] = [c['A'], c['C'], c['G'], c['T']] #A, C, G, T
+                            
+                self.A_mask = [char=='A' for char in lsequence]
+                self.C_mask = [char=='C' for char in lsequence]
+                self.G_mask = [char=='G' for char in lsequence]
+                self.T_mask = [char=='T' for char in lsequence]
         def __str__(self) -> str:
             return f'{self.seq_idx}:[{self.lsequence}]'
         def __repr__(self) -> str:
@@ -120,69 +127,73 @@ class MotifFinder:
                 candidates.append(lmer)
         return candidates
     
-    def IC(motif):
-        lmer_strings = [l.lsequence for l in motif]
-        string_length = len(lmer_strings[0])
-        seq_count = len(lmer_strings)
-        total = seq_count*string_length
-        concat_string = ''.join(lmer_strings)
-        counts = Counter(concat_string)
-        A_background = (counts['A']+1)/total
-        C_background = (counts['C']+1)/total
-        G_background = (counts['G']+1)/total
-        T_background = (counts['T']+1)/total
+    def calculateIC(lmers, L):
+        seq_count = len(lmers)
+        bg_tot = seq_count * L
+
+        A_bg = (sum([lmer.counts[0] for lmer in lmers])+1)/bg_tot
+        C_bg = (sum([lmer.counts[1] for lmer in lmers])+1)/bg_tot
+        G_bg = (sum([lmer.counts[2] for lmer in lmers])+1)/bg_tot
+        T_bg = (sum([lmer.counts[3] for lmer in lmers])+1)/bg_tot
+
+        A_pc = [sum([lmer.A_mask[p] for lmer in lmers]) for p in range(L)]
+        C_pc = [sum([lmer.C_mask[p] for lmer in lmers]) for p in range(L)]
+        G_pc = [sum([lmer.G_mask[p] for lmer in lmers]) for p in range(L)]
+        T_pc = [sum([lmer.T_mask[p] for lmer in lmers]) for p in range(L)]
+
+        A_odds = [(A_pc[p])/seq_count for p in range(L)]
+        C_odds = [(C_pc[p])/seq_count for p in range(L)]
+        G_odds = [(G_pc[p])/seq_count for p in range(L)]
+        T_odds = [(T_pc[p])/seq_count for p in range(L)]
+        
         information_content = 0
-
-        for p in range(string_length):
-            A_odds = sum([c=='A' for s in lmer_strings for c in s[p]])/seq_count
-            C_odds = sum([c=='C' for s in lmer_strings for c in s[p]])/seq_count
-            G_odds = sum([c=='G' for s in lmer_strings for c in s[p]])/seq_count
-            T_odds = sum([c=='T' for s in lmer_strings for c in s[p]])/seq_count
-
-            information_content += A_odds*logbase2(A_odds/A_background) + C_odds*logbase2(C_odds/C_background) + G_odds*logbase2(G_odds/G_background) + T_odds*logbase2(T_odds/T_background)
+        for p in range(L):
+            information_content += A_odds[p]*logbase2(A_odds[p]/A_bg) + C_odds[p]*logbase2(C_odds[p]/C_bg) + G_odds[p]*logbase2(G_odds[p]/G_bg) + T_odds[p]*logbase2(T_odds[p]/T_bg)
 
         return information_content
     
-    def chooseBestInstance(curr_instances, possible_instances):
-        lmer_strings = [l.lsequence for l in curr_instances]
-        string_length = len(lmer_strings[0])
-        seq_count = len(lmer_strings)
-        total = seq_count*string_length
-        concat_string = ''.join(lmer_strings)
-        counts = Counter(concat_string)
-        A_background = counts['A']+1
-        C_background = counts['C']+1
-        G_background = counts['G']+1
-        T_background = counts['T']+1
-        A_positional_counts = [sum([c=='A' for s in lmer_strings for c in s[p]]) for p in range(string_length)]
-        C_positional_counts = [sum([c=='C' for s in lmer_strings for c in s[p]]) for p in range(string_length)]
-        G_positional_counts = [sum([c=='G' for s in lmer_strings for c in s[p]]) for p in range(string_length)]
-        T_positional_counts = [sum([c=='T' for s in lmer_strings for c in s[p]]) for p in range(string_length)]
+    def chooseBestInstance(curr_instances, possible_instances, L):
+        # This parameter includes the new instance
+        seq_count = len(curr_instances) + 1
+        bg_tot = seq_count * L
+        # The following parameters are excluding 'possible_instances'.
+        A_curr_tot = sum([lmer.counts[0] for lmer in curr_instances])
+        C_curr_tot = sum([lmer.counts[1] for lmer in curr_instances])
+        G_curr_tot = sum([lmer.counts[2] for lmer in curr_instances])
+        T_curr_tot = sum([lmer.counts[3] for lmer in curr_instances])
+
+        A_curr_pc = [sum([lmer.A_mask[p] for lmer in curr_instances]) for p in range(L)]
+        C_curr_pc = [sum([lmer.C_mask[p] for lmer in curr_instances]) for p in range(L)]
+        G_curr_pc = [sum([lmer.G_mask[p] for lmer in curr_instances]) for p in range(L)]
+        T_curr_pc = [sum([lmer.T_mask[p] for lmer in curr_instances]) for p in range(L)]
 
         best_assignment = None
         best_score = -999
-        for a in possible_instances:
+        for instance in possible_instances:
+            new_lmer = instance.lmer
             information_content = 0
-            assgn_counts = Counter(a.lmer.lsequence)
-            A_bg_new = (A_background + assgn_counts['A'])/(total+1)
-            C_bg_new = (C_background + assgn_counts['C'])/(total+1)
-            G_bg_new = (G_background + assgn_counts['G'])/(total+1)
-            T_bg_new = (T_background + assgn_counts['T'])/(total+1)
-            A_odds = [x/(seq_count+1) for x in list(map(add, A_positional_counts, [a.lmer.lsequence[i] == 'A' for i in range(string_length)]))]
-            C_odds = [x/(seq_count+1) for x in list(map(add, C_positional_counts, [a.lmer.lsequence[i] == 'C' for i in range(string_length)]))]
-            G_odds = [x/(seq_count+1) for x in list(map(add, G_positional_counts, [a.lmer.lsequence[i] == 'G' for i in range(string_length)]))]
-            T_odds = [x/(seq_count+1) for x in list(map(add, T_positional_counts, [a.lmer.lsequence[i] == 'T' for i in range(string_length)]))]
-            # print(A_odds)
-            for p in range(string_length):
-                information_content += A_odds[p]*logbase2(A_odds[p]/A_bg_new) + C_odds[p]*logbase2(C_odds[p]/C_bg_new) + G_odds[p]*logbase2(G_odds[p]/G_bg_new) + T_odds[p]*logbase2(T_odds[p]/T_bg_new)
-            # if information_content < 0: print(information_content)
+
+            A_bg = (A_curr_tot + new_lmer.counts[0] + 1)/bg_tot
+            C_bg = (C_curr_tot + new_lmer.counts[1] + 1)/bg_tot
+            G_bg = (G_curr_tot + new_lmer.counts[2] + 1)/bg_tot
+            T_bg = (T_curr_tot + new_lmer.counts[3] + 1)/bg_tot
+
+            A_odds = [(A_curr_pc[p] + new_lmer.A_mask[p])/seq_count for p in range(L)]
+            C_odds = [(C_curr_pc[p] + new_lmer.C_mask[p])/seq_count for p in range(L)]
+            G_odds = [(G_curr_pc[p] + new_lmer.G_mask[p])/seq_count for p in range(L)]
+            T_odds = [(T_curr_pc[p] + new_lmer.T_mask[p])/seq_count for p in range(L)]
+
+            for p in range(L):
+                information_content +=\
+                      A_odds[p]*logbase2(A_odds[p]/A_bg) + C_odds[p]*logbase2(C_odds[p]/C_bg) +\
+                      G_odds[p]*logbase2(G_odds[p]/G_bg) + T_odds[p]*logbase2(T_odds[p]/T_bg)
             if information_content > best_score:
                 best_score = information_content
-                best_assignment = a.lmer
-        # print(best_score)
+                best_assignment = new_lmer
         return best_assignment
     def pruneUnlikelyMotifs(lmers, N):
         sorted_avg_dist_list = SortedList([(sum([sl[0].dist for sl in lmer.distances])/N, lmer) for lmer in lmers], key=lambda x: x[0])
+        # print(sorted_avg_dist_list[:20])
         mean_of_avgs = np.mean([x[0] for x in sorted_avg_dist_list])
         idx = sorted_avg_dist_list.bisect_right((mean_of_avgs, None))
         return [tup[1] for tup in sorted_avg_dist_list[:idx]]
@@ -196,25 +207,23 @@ class MotifFinder:
                     drop_idx = lmer.distances[i].index(dummy_instance)
                 else: continue
                 del lmer.distances[i][drop_idx:]
-    def findBestMotif(candidate_lmers, seq_count):
+    def findBestMotif(candidate_lmers, seq_count, L):
         best_motif = None
         best_score = 0
         for cl in candidate_lmers:
-            instance_list = [cl]
-            seq_indices = list(range(seq_count))
-            seq_indices.pop(cl.seq_idx)
-            for seq_idx in seq_indices:
-                if len(cl.distances[seq_idx]) == 1:
-                    instance_list.append(cl)
-                else:
-                    instance_list.append(MotifFinder.chooseBestInstance(instance_list, cl.distances[seq_idx]))
-            score = MotifFinder.IC(instance_list)
+            instance_list = []
+            for seq_idx in range(seq_count):
+                if seq_idx == cl.seq_idx: instance_list.append(cl)
+                elif len(cl.distances[seq_idx]) == 1: instance_list.append(cl.distances[seq_idx][0].lmer)
+                else: 
+                    best_inst = MotifFinder.chooseBestInstance(instance_list, cl.distances[seq_idx], L)
+                    instance_list.append(best_inst)
+
+            score = MotifFinder.calculateIC(instance_list, L)
             if score > best_score:
                 best_score = score
-                best_motif = instance_list
+                best_motif = (instance_list, cl)
         return best_motif
-
-    
 
 def main():
     sequences = SequenceProcessor.readFromSitesFile("datasets\\MA0014.2.sites", n_seq=60, seq_len=60)
@@ -232,12 +241,18 @@ def main():
     candidate_lmers = MotifFinder.removeDegenerateLmers(lmer_flatlist, N)
     MotifFinder.pruneDistanceList(candidate_lmers, w)
     likely_patterns = MotifFinder.pruneUnlikelyMotifs(candidate_lmers, N)
-    motif = MotifFinder.findBestMotif(likely_patterns, N)
+    motif = MotifFinder.findBestMotif(likely_patterns, N, L)
     ########
     end_time = time.perf_counter_ns()
 
     StringUtils.displayMotifs(sequences, motif, L)
-    print(f"Time to find motif: {(end_time-start_time)/(10**6)} ms")
+    correct_instances = sum([(inst.start_pos == 50) for inst in motif[0]])
+    accuracy = correct_instances/N
+
+    # for MA0014.2.sites
+    print(f'Time to find motif: {(end_time-start_time)/(10**6)} ms')
+    print(f'Instances correctly Identified: {correct_instances}/{N}')
+    print(f'Accuracy: {accuracy*100}%')
 
 if __name__ == "__main__":
     main()
