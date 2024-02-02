@@ -6,6 +6,7 @@ import numpy as np
 from collections import Counter
 import functools
 from sortedcontainers import SortedList
+from difflib import SequenceMatcher
 
 CURR_PATH = os.path.dirname(__file__)
 os.chdir(CURR_PATH)
@@ -16,6 +17,9 @@ class StringUtils:
         return substrings
 
     def displayMotifs(sequences, motif, L):
+        if motif is None:
+            print("No motif with the allowed number of mismatches was found. Try relaxing the parameters.")
+            return -1
         instances = motif[0]
         pattern = motif[1]
         result = ""
@@ -30,7 +34,7 @@ class StringUtils:
             result += '\033[91m' + sequences[lmer.seq_idx][lmer.start_pos:lmer.start_pos+L] + '\033[0m'
             result += sequences[lmer.seq_idx][lmer.start_pos+L:] + '\n'
         
-        print(result)
+        return result
 
 class SequenceProcessor:
     def __init__(self, N, w):
@@ -79,11 +83,35 @@ class SequenceProcessor:
     def createLmer(self, lsequence, seq_idx, start_pos):
         return self.Lmer(lsequence, seq_idx, start_pos, self.sequence_count)
     
-    def readFromSitesFile(relative_file_path, n_seq = -1, seq_len = -1) -> str:
-        unfiltered_strings = open(relative_file_path).read().upper().split('\n')
-        sequences = [string[:seq_len] for string in unfiltered_strings if not string.startswith(">")]
+    def readMA00831():
+        f = open('datasets\\MA0083.1.sites').read().split('\n')[:-1]
+        sequences = [s for s in f if not s.startswith(">")]
+        patterns = [''.join([c for c in s if c.isupper()]) for s in sequences]
+        motif_length = len(patterns[0])
+        sequences = [c.upper() for c in sequences]
+        return sequences, patterns, motif_length
+    def readMA00941():
+        f = open('datasets\\MA0094.1.sites').read().split('\n')[:-1]
+        sequences = [s for s in f if not s.startswith(">")]
+        patterns = [''.join([c for c in s if c.isupper()]) for s in sequences]
+        motif_length = len(patterns[0])
+        sequences = [c.upper() for c in sequences]
+        return sequences, patterns, motif_length
+    def readMA01042(n_seq = -1):
+        f = open('datasets\\MA0104.2.sites').read().split('\n')[:-1]
+        sequences = [s for s in f if not s.startswith(">")]
+        patterns = [''.join([c for c in s if c.isupper()]) for s in sequences]
+        motif_length = len(patterns[0])
+        sequences = [c.upper() for c in sequences]
+        return sequences[:n_seq], patterns[:n_seq], motif_length
+    def readMA00142(n_seq = -1):
+        f = open('datasets\\MA0014.2.sites').read().split('\n')
+        sequences = [s for s in f if not s.startswith(">")]
         sequences = [sequences[i] for i in range(0, len(sequences), 2)]
-        return sequences[:n_seq]
+        patterns = [''.join([c for c in s if c.isupper()]) for s in sequences]
+        motif_length = len(patterns[0])
+        sequences = [s.upper() for s in sequences]
+        return sequences[:n_seq], patterns[:n_seq], motif_length
     
     def extractLmersFromSequence(self, sequence, seq_idx, lmer_size) -> list[Lmer]:
         lmer_list = []
@@ -107,7 +135,7 @@ class SequenceProcessor:
         return lmer_list
     
 class MotifFinder:
-    def findInstances(lmer_seq_list, N, d):
+    def fillDistanceMatrix(lmer_seq_list, N, d):
         for first_seq in range(N):
             for first_lmer in lmer_seq_list[first_seq]:
                 for second_seq in range(first_seq+1, N):
@@ -193,7 +221,6 @@ class MotifFinder:
         return best_assignment
     def pruneUnlikelyMotifs(lmers, N):
         sorted_avg_dist_list = SortedList([(sum([sl[0].dist for sl in lmer.distances])/N, lmer) for lmer in lmers], key=lambda x: x[0])
-        # print(sorted_avg_dist_list[:20])
         mean_of_avgs = np.mean([x[0] for x in sorted_avg_dist_list])
         idx = sorted_avg_dist_list.bisect_right((mean_of_avgs, None))
         return [tup[1] for tup in sorted_avg_dist_list[:idx]]
@@ -226,8 +253,12 @@ class MotifFinder:
         return best_motif
 
 def main():
-    sequences = SequenceProcessor.readFromSitesFile("datasets\\MA0014.2.sites", n_seq=60, seq_len=60)
-    L = 10
+    # Uncomment each data line for that specific dataset
+    sequences, true_patterns, motif_length = SequenceProcessor.readMA00142(60)
+    # sequences, true_patterns, motif_length = SequenceProcessor.readMA00831()
+    # sequences, true_patterns, motif_length = SequenceProcessor.readMA00941()
+    # sequences, true_patterns, motif_length = SequenceProcessor.readMA01042(20)
+    L = motif_length
     d = 5
     w = 1
     N = len(sequences)
@@ -237,7 +268,7 @@ def main():
     
     start_time = time.perf_counter_ns()
     ########
-    MotifFinder.findInstances(lmer_seq_lst, N, d)
+    MotifFinder.fillDistanceMatrix(lmer_seq_lst, N, d)
     candidate_lmers = MotifFinder.removeDegenerateLmers(lmer_flatlist, N)
     MotifFinder.pruneDistanceList(candidate_lmers, w)
     likely_patterns = MotifFinder.pruneUnlikelyMotifs(candidate_lmers, N)
@@ -245,14 +276,25 @@ def main():
     ########
     end_time = time.perf_counter_ns()
 
-    StringUtils.displayMotifs(sequences, motif, L)
-    correct_instances = sum([(inst.start_pos == 50) for inst in motif[0]])
-    accuracy = correct_instances/N
-
-    # for MA0014.2.sites
+    result = StringUtils.displayMotifs(sequences, motif, L)
+    if result == -1:
+        return
+    else:
+        print(result)
     print(f'Time to find motif: {(end_time-start_time)/(10**6)} ms')
+    
+    #### Evaluation ####
+    pred_patterns = [lmer.lsequence for lmer in motif[0]]
+    # Exact instance match
+    correct_instances = sum([pred_patterns[i]==true_patterns[i] for i in range(N)])
+    # Per character match
+    correct_chars = sum([SequenceMatcher(None, s1, s2).find_longest_match().size for s1, s2 in zip(pred_patterns, true_patterns)])
+    inst_accuracy = correct_instances/N
+    char_accuracy = correct_chars/(N*L)
     print(f'Instances correctly Identified: {correct_instances}/{N}')
-    print(f'Accuracy: {accuracy*100}%')
+    print(f'Character matches: {correct_chars}/{N*L}')
+    print(f'Exact match accuracy: {(inst_accuracy*100):.2f}%')
+    print(f'Character match accuracy: {(char_accuracy*100):.2f}%')
 
 if __name__ == "__main__":
     main()
